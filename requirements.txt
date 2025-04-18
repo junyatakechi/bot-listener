@@ -1,0 +1,5 @@
+fastapi==0.115.12   # 2025‑04 時点最新版 :contentReference[oaicite:0]{index=0}
+uvicorn[standard]   # ASGI サーバ
+openai==1.75.0      # Python SDK 1.x 系最新 :contentReference[oaicite:1]{index=1}
+python-dotenv
+httpx               # 非同期 HTTP
