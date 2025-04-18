@@ -113,9 +113,8 @@ stream_context = {
     "mood": "neutral"
 }
 
-
-# APIを使ってボットの反応を生成する関数
-async def generate_bot_reaction(content: str, bot_info: dict) -> str:
+# APIを使ってボットの反応を生成する関数（Unicode対応版）
+async def generate_bot_reaction(content: str, bot_info: dict, stream_context: dict = None) -> str:
     try:
         # ボット情報からシステムメッセージを構築
         personality_type = bot_info.get("personality_type", "standard")
@@ -128,19 +127,103 @@ async def generate_bot_reaction(content: str, bot_info: dict) -> str:
         else:
             interests_str = str(interests)
         
-        system_message = f"""あなたはライブ配信の視聴者ボットです。個性: {personality_type}、興味: {interests_str}、絵文字使用頻度: {emoji_usage}。
-配信内容に対して自然な反応を一行で返してください。実際の視聴者のように振る舞い、質問、感想、リアクション、絵文字などで反応してください。返答は50文字以内に簡潔にしてください。"""
+        # 配信コンテキスト情報を構築
+        stream_title = "不明な配信"
+        stream_duration = 0
+        stream_topics = []
+        previous_messages = []
         
-        # OpenAI APIを呼び出し (metadataを削除)
+        if stream_context:
+            stream_title = stream_context.get("title", "不明な配信")
+            stream_duration = stream_context.get("duration", 0)
+            stream_topics = stream_context.get("topics", [])
+            previous_messages = stream_context.get("previous_messages", [])
+        
+        # Unicode問題を回避するためにASCII範囲外の文字をエスケープ
+        def sanitize_text(text):
+            if not isinstance(text, str):
+                return str(text)
+            # ASCII範囲外の文字をエスケープまたは置換
+            return text.encode('ascii', 'backslashreplace').decode('ascii')
+        
+        # テキストデータをサニタイズ
+        sanitized_title = sanitize_text(stream_title)
+        sanitized_personality = sanitize_text(personality_type)
+        sanitized_interests = sanitize_text(interests_str)
+        
+        # 前回のメッセージコンテキスト（最大3つ）
+        context_messages = ""
+        if previous_messages:
+            for i, msg in enumerate(previous_messages[-3:]):
+                sanitized_msg = sanitize_text(msg)
+                context_messages += f"前回のメッセージ{i+1}: {sanitized_msg}\n"
+        
+        # より詳細なボット設定に基づくシステムメッセージ
+        personality_descriptions = {
+            "enthusiastic": "とても熱心で興奮しやすい。ポジティブで応援するような発言が多い。絵文字を多用する。",
+            "critical": "少し批判的で分析的。質問や改善提案をすることが多い。",
+            "curious": "好奇心旺盛で質問が多い。「なぜ」「どのように」といった疑問を投げかける。",
+            "shy": "控えめで、短いコメントが多い。でも配信者の言葉には反応する。",
+            "funny": "ユーモアがあり、冗談やおかしなコメントをすることが多い。",
+            "technical": "技術的な話題に詳しく、専門的なコメントや質問をする。",
+            "supportive": "サポート的で、共感や励ましのコメントが多い。"
+        }
+        
+        emoji_descriptions = {
+            "high": "絵文字を多用する（1-2個/メッセージ）",
+            "medium": "絵文字を時々使う（50%の確率で1つ）",
+            "low": "絵文字はあまり使わない（20%の確率で1つ）"
+        }
+        
+        personality_desc = personality_descriptions.get(sanitized_personality, "標準的な反応をする")
+        emoji_desc = emoji_descriptions.get(emoji_usage, "絵文字を適度に使う")
+        
+        # 配信時間に応じた視聴者の態度
+        viewer_attitude = "初めて見た配信に興味を持っている"
+        if stream_duration > 1800:  # 30分以上
+            viewer_attitude = "しばらく視聴していて配信の流れを理解している"
+        elif stream_duration > 300:  # 5分以上
+            viewer_attitude = "少し視聴していて配信に慣れてきている"
+        
+        # 配信タイトルに基づく興味レベル
+        interest_level = "普通"
+        for interest in interests:
+            # 興味と配信タイトルに共通のキーワードがあるか確認
+            if isinstance(interest, str) and isinstance(stream_title, str):
+                if interest.lower() in stream_title.lower():
+                    interest_level = "高い"
+                    break
+        
+        system_message = f"""あなたはライブ配信「{sanitized_title}」の視聴者ボットです。
+
+【ボットの個性】
+- 個性タイプ: {sanitized_personality}（{personality_desc}）
+- 興味のある分野: {sanitized_interests}
+- 絵文字の使用: {emoji_desc}
+- 配信への興味レベル: {interest_level}
+- 視聴者の態度: {viewer_attitude}
+
+【配信コンテキスト】
+- 配信タイトル: {sanitized_title}
+- 配信時間: {int(stream_duration/60)}分{int(stream_duration%60)}秒
+{context_messages}
+
+配信内容に対して、上記の個性に基づいた自然な反応を一行で返してください。
+実際の視聴者のように振る舞い、質問、感想、リアクション、絵文字などで反応してください。
+返答は50文字以内に簡潔にしてください。"""
+
+        # 配信内容もサニタイズ
+        sanitized_content = sanitize_text(content)
+        
+        # OpenAI APIを呼び出し
         response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",  # 適切なモデルに変更
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": f"配信内容: {content}\n\n視聴者としての自然な反応を一行で書いてください。"}
+                {"role": "user", "content": f"配信内容: {sanitized_content}\n\n視聴者としての自然な反応を一行で書いてください。"}
             ],
-            max_completion_tokens=60,  # max_tokensではなくmax_completion_tokensを使用
-            temperature=0.7
-            # metadataパラメータは削除
+            max_completion_tokens=60,
+            temperature=0.8  # 個性をより出すために少し高めに設定
         )
         
         return response.choices[0].message.content.strip()
@@ -156,21 +239,29 @@ async def generate_bot_reaction(content: str, bot_info: dict) -> str:
             "続き気になります！",
             "わかります！",
             "すごい！",
-            "応援してます！"
+            "応援してます！",
+            "どうやってやるんですか？",
+            "初めて見ました！",
+            "もっと教えてください！",
+            "それってどういう意味ですか？"
         ]
         import random
         return random.choice(fallback_responses)
 
 
-# 配信者エンドポイント
+# StreamContextManagerのインスタンスを作成
+from StreamContextManager import StreamContextManager
+context_manager = StreamContextManager()
+
+# 配信者エンドポイントの修正
 @app.websocket("/broadcaster")
 async def broadcaster_endpoint(websocket: WebSocket, background_tasks: BackgroundTasks):
     if not await manager.connect_broadcaster(websocket):
         return
     
     # 配信開始処理
-    stream_context["start_time"] = time.time()
-    stream_context["stream_id"] = str(uuid.uuid4())
+    stream_id = str(uuid.uuid4())
+    stream_context = context_manager.reset_context(stream_id)
     
     try:
         # 現在の視聴ボット数を通知
@@ -187,12 +278,36 @@ async def broadcaster_endpoint(websocket: WebSocket, background_tasks: Backgroun
             try:
                 # JSONデータとしてパース
                 message_data = json.loads(data)
+                
+                # コマンドの処理
+                if "command" in message_data:
+                    command = message_data["command"]
+                    if command == "get_viewers":
+                        await manager.send_to_broadcaster({
+                            "type": "system_info",
+                            "message": f"現在の視聴ボット数: {manager.get_bot_count()}",
+                            "timestamp": time.time()
+                        })
+                        continue
+                
                 content = message_data.get("content", data)
                 metadata = message_data.get("metadata", {})
                 
                 # ストリームコンテキストを更新
                 if "stream_title" in metadata:
-                    stream_context["title"] = metadata["stream_title"]
+                    context_manager.update_title(metadata["stream_title"], stream_id)
+                
+                # メッセージをコンテキストに追加
+                context_manager.add_message(content, stream_id)
+                
+                # 雰囲気分析
+                context_manager.analyze_mood(content, stream_id)
+                
+                # 視聴者数を更新
+                context_manager.update_viewers(manager.get_bot_count(), stream_id)
+                
+                # 更新されたコンテキストを取得
+                current_context = context_manager.get_context(stream_id)
                 
                 # ボットに配信内容を送信
                 await manager.broadcast_to_bots({
@@ -200,9 +315,10 @@ async def broadcaster_endpoint(websocket: WebSocket, background_tasks: Backgroun
                     "content": content,
                     "timestamp": time.time(),
                     "stream_info": {
-                        "title": stream_context["title"],
-                        "duration": time.time() - stream_context["start_time"],
-                        "viewers": manager.get_bot_count()
+                        "title": current_context["title"],
+                        "duration": current_context["duration"],
+                        "viewers": manager.get_bot_count(),
+                        "mood": current_context["mood"]
                     }
                 })
                 
@@ -210,10 +326,25 @@ async def broadcaster_endpoint(websocket: WebSocket, background_tasks: Backgroun
                 
             except json.JSONDecodeError:
                 # プレーンテキストの場合
+                # メッセージをコンテキストに追加
+                context_manager.add_message(data, stream_id)
+                
+                # 雰囲気分析
+                context_manager.analyze_mood(data, stream_id)
+                
+                # 更新されたコンテキストを取得
+                current_context = context_manager.get_context(stream_id)
+                
                 await manager.broadcast_to_bots({
                     "type": "stream_content",
                     "content": data,
-                    "timestamp": time.time()
+                    "timestamp": time.time(),
+                    "stream_info": {
+                        "title": current_context["title"],
+                        "duration": current_context["duration"],
+                        "viewers": manager.get_bot_count(),
+                        "mood": current_context["mood"]
+                    }
                 })
                 
                 logger.info(f"プレーンテキストをブロードキャスト: {data[:50]}...")
@@ -225,18 +356,23 @@ async def broadcaster_endpoint(websocket: WebSocket, background_tasks: Backgroun
         await manager.disconnect_broadcaster()
 
 
-# ボットビューアーエンドポイント
+# ボットビューアーエンドポイントの修正
 @app.websocket("/bot-viewer")
 async def bot_viewer_endpoint(websocket: WebSocket):
     await manager.connect_bot_viewer(websocket)
     
+    # デフォルトのストリームコンテキストを取得
+    stream_id = context_manager.default_stream_id
+    current_context = context_manager.get_context(stream_id)
+    
     # 現在の配信情報を送信
-    if stream_context["start_time"]:
+    if current_context["start_time"]:
         await manager.send_to_bot(websocket, {
             "type": "stream_info",
-            "title": stream_context["title"],
-            "duration": time.time() - stream_context["start_time"],
-            "viewers": manager.get_bot_count()
+            "title": current_context["title"],
+            "duration": current_context["duration"],
+            "viewers": manager.get_bot_count(),
+            "mood": current_context["mood"]
         })
     
     # 配信者に視聴者数変更を通知
@@ -247,6 +383,9 @@ async def bot_viewer_endpoint(websocket: WebSocket):
             "event": "join",
             "timestamp": time.time()
         })
+        
+        # 視聴者数の更新
+        context_manager.update_viewers(manager.get_bot_count(), stream_id)
     
     try:
         # メッセージ受信ループ
@@ -284,8 +423,11 @@ async def bot_viewer_endpoint(websocket: WebSocket):
                     stream_content = message_data.get("content", "")
                     bot_info = message_data.get("bot_info", {})
                     
+                    # 最新のコンテキストを取得
+                    current_context = context_manager.get_context(stream_id)
+                    
                     # AIを使って反応を生成
-                    ai_reaction = await generate_bot_reaction(stream_content, bot_info)
+                    ai_reaction = await generate_bot_reaction(stream_content, bot_info, current_context)
                     
                     response = {
                         "type": "reaction",
@@ -325,11 +467,13 @@ async def bot_viewer_endpoint(websocket: WebSocket):
                 "event": "leave",
                 "timestamp": time.time()
             })
+            
+            # 視聴者数の更新
+            context_manager.update_viewers(manager.get_bot_count(), stream_id)
     
     except Exception as e:
         logger.error(f"ボットビューアーエンドポイントエラー: {e}")
         await manager.disconnect_bot_viewer(websocket)
-
 
 # ヘルスチェックエンドポイント
 @app.get("/health")

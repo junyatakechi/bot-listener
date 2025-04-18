@@ -11,6 +11,7 @@
 
 import asyncio
 import sys
+import os
 import argparse
 import websockets
 import json
@@ -21,18 +22,47 @@ import random
 
 async def broadcaster_client(uri: str) -> None:
     """配信者クライアント: 標準入力からテキストを読み取り配信する"""
+    # 配信タイトルを最初に入力
+    stream_title = input("配信のタイトルを入力してください: ")
+    if not stream_title.strip():
+        stream_title = "テスト配信"  # デフォルトタイトル
+        
+    print(f"🎬 配信タイトル: {stream_title}")
+    
     async with websockets.connect(uri) as ws:
         print(f"✅ 配信者として接続完了: {uri}")
-        print("👉 配信内容を入力して Enter。Ctrl‑D / Ctrl‑C で終了。\n")
+        print("👉 配信内容を入力して Enter。Ctrl‑D / Ctrl‑C で終了。")
+        print("💡 コマンド: /title <新タイトル> (タイトル変更), /viewers (視聴者数確認)\n")
 
         # 受信タスク
         async def receiver():
             try:
                 async for msg in ws:
-                    # JSONレスポンスを整形して表示
+                    # JSONレスポンスを解析
                     try:
                         data = json.loads(msg)
-                        # print(f"\r🔄 フィードバック受信: {json.dumps(data, ensure_ascii=True, indent=2)}\n> ", end="", flush=True)
+                        
+                        # ボットの反応を表示
+                        if data.get("type") == "bot_reaction":
+                            bot_name = data.get("bot_info", {}).get("name", "匿名ボット")
+                            personality = data.get("bot_info", {}).get("personality_type", "")
+                            content = data.get("content", "")
+                            print(f"\r👤 {bot_name}({personality}): {content}\n> ", end="", flush=True)
+                        # 視聴者数更新の表示
+                        elif data.get("type") == "viewer_update":
+                            count = data.get("count", 0)
+                            event = data.get("event", "")
+                            if event == "join":
+                                print(f"\r👥 新しい視聴者が参加しました (計: {count}人)\n> ", end="", flush=True)
+                            elif event == "leave":
+                                print(f"\r👋 視聴者が退出しました (計: {count}人)\n> ", end="", flush=True)
+                        # システム情報の表示
+                        elif data.get("type") == "system_info":
+                            print(f"\r📢 システム: {data.get('message', '')}\n> ", end="", flush=True)
+                        # その他のメッセージは詳細表示をオプションに
+                        else:
+                            if os.environ.get("DEBUG") == "1":
+                                print(f"\r🔄 受信データ: {json.dumps(data, ensure_ascii=True, indent=2)}\n> ", end="", flush=True)
                     except json.JSONDecodeError:
                         print(f"\r🔄 メッセージ受信: {msg}\n> ", end="", flush=True)
             except websockets.ConnectionClosedOK:
@@ -50,6 +80,19 @@ async def broadcaster_client(uri: str) -> None:
                 if not line:  # EOF（Ctrl‑D）
                     break
                 
+                # 特殊コマンドチェック
+                if line.startswith("/title "):
+                    # タイトル変更コマンド
+                    new_title = line[7:].strip()
+                    if new_title:
+                        stream_title = new_title
+                        print(f"🎬 配信タイトルを変更: {stream_title}")
+                    continue
+                elif line.strip() == "/viewers":
+                    # 視聴者数確認コマンド
+                    await ws.send(json.dumps({"command": "get_viewers"}, ensure_ascii=True))
+                    continue
+                
                 # 配信コンテンツをメタデータと共に送信
                 stream_data = {
                     "content": line.rstrip("\n"),
@@ -57,7 +100,7 @@ async def broadcaster_client(uri: str) -> None:
                         "timestamp": time.time(),
                         "stream_id": str(uuid.uuid4()),
                         "broadcaster_id": "test_broadcaster",
-                        "stream_title": "テスト配信",
+                        "stream_title": stream_title,
                         "language": "ja"
                     }
                 }
@@ -119,7 +162,7 @@ async def bot_viewer_client(uri: str) -> None:
                     data = json.loads(msg)
                     
                     if "type" in data and data["type"] == "stream_content":
-                        # print(f"\r📺 配信内容: {data['content']}")
+                        print(f"\r📺 配信内容: {data['content']}")
                         
                         # AI生成のリクエストを送信
                         ai_request = {
@@ -131,7 +174,7 @@ async def bot_viewer_client(uri: str) -> None:
                         
                         # AIサーバーにリクエストを送信
                         await ws.send(json.dumps(ai_request, ensure_ascii=True))
-                        # print("🔄 AI生成リクエスト送信...")
+                        print("🔄 AI生成リクエスト送信...")
                         
                     elif "type" in data and data["type"] == "reaction" and data.get("ai_generated", False):
                         # AIが生成した反応を表示
