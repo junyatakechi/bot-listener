@@ -114,7 +114,7 @@ stream_context = {
 }
 
 
-# AIを使ってボットの反応を生成する関数
+# APIを使ってボットの反応を生成する関数
 async def generate_bot_reaction(content: str, bot_info: dict) -> str:
     try:
         # ボット情報からシステムメッセージを構築
@@ -122,35 +122,44 @@ async def generate_bot_reaction(content: str, bot_info: dict) -> str:
         interests = bot_info.get("interests", [])
         emoji_usage = bot_info.get("emoji_usage", "medium")
         
-        system_message = f"""あなたはライブ配信の視聴者ボットです。個性: {personality_type}、興味: {', '.join(interests)}、絵文字使用頻度: {emoji_usage}。
-配信内容に対して自然な反応を一行で返してください。実際の視聴者のように振る舞い、質問、感想、リアクション、絵文字などで反応してください。"""
+        # interestsが配列の場合は文字列に変換
+        if isinstance(interests, list):
+            interests_str = ", ".join(interests)
+        else:
+            interests_str = str(interests)
         
-        # OpenAI APIを呼び出し
+        system_message = f"""あなたはライブ配信の視聴者ボットです。個性: {personality_type}、興味: {interests_str}、絵文字使用頻度: {emoji_usage}。
+配信内容に対して自然な反応を一行で返してください。実際の視聴者のように振る舞い、質問、感想、リアクション、絵文字などで反応してください。返答は50文字以内に簡潔にしてください。"""
+        
+        # OpenAI APIを呼び出し (metadataを削除)
         response = await client.chat.completions.create(
-            model="o4-mini",  # 適切なモデルに変更
+            model="gpt-3.5-turbo",  # 適切なモデルに変更
             messages=[
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": f"配信内容: {content}\n\n視聴者としての自然な反応を一行で書いてください。"}
             ],
-            max_tokens=60,
-            temperature=0.7,
-            metadata={
-                "stream_id": stream_context["stream_id"],
-                "bot_personality": personality_type,
-                "bot_interests": interests,
-                "stream_context": {
-                    "title": stream_context["title"],
-                    "topics": stream_context["topics"],
-                    "mood": stream_context["mood"]
-                }
-            }
+            max_completion_tokens=60,  # max_tokensではなくmax_completion_tokensを使用
+            temperature=0.7
+            # metadataパラメータは削除
         )
         
         return response.choices[0].message.content.strip()
     
     except Exception as e:
         logger.error(f"AI反応生成エラー: {e}")
-        return "面白いですね！"  # フォールバック反応
+        # エラーの場合はフォールバック反応を返す
+        fallback_responses = [
+            "面白いですね！",
+            "なるほど～",
+            "それは興味深いです！",
+            "へぇ～！",
+            "続き気になります！",
+            "わかります！",
+            "すごい！",
+            "応援してます！"
+        ]
+        import random
+        return random.choice(fallback_responses)
 
 
 # 配信者エンドポイント
@@ -269,6 +278,37 @@ async def bot_viewer_endpoint(websocket: WebSocket):
                         })
                     
                     logger.info(f"ボット反応: {content[:50]}...")
+                
+                # ストリームコンテンツに対する自動反応
+                if message_type == "receive_stream_content":
+                    stream_content = message_data.get("content", "")
+                    bot_info = message_data.get("bot_info", {})
+                    
+                    # AIを使って反応を生成
+                    ai_reaction = await generate_bot_reaction(stream_content, bot_info)
+                    
+                    response = {
+                        "type": "reaction",
+                        "content": ai_reaction,
+                        "bot_info": bot_info,
+                        "timestamp": time.time(),
+                        "ai_generated": True
+                    }
+                    
+                    # ボットに反応を送信
+                    await websocket.send_text(json.dumps(response, ensure_ascii=True))
+                    
+                    # 配信者にも転送
+                    if manager.broadcaster:
+                        await manager.send_to_broadcaster({
+                            "type": "bot_reaction",
+                            "content": ai_reaction,
+                            "bot_info": bot_info,
+                            "timestamp": time.time(),
+                            "ai_generated": True
+                        })
+                    
+                    logger.info(f"AI生成反応: {ai_reaction[:50]}...")
             
             except json.JSONDecodeError:
                 # ハートビートとして扱う

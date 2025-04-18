@@ -16,6 +16,7 @@ import websockets
 import json
 import time
 import uuid
+import random
 
 
 async def broadcaster_client(uri: str) -> None:
@@ -31,7 +32,7 @@ async def broadcaster_client(uri: str) -> None:
                     # JSONレスポンスを整形して表示
                     try:
                         data = json.loads(msg)
-                        print(f"\r🔄 フィードバック受信: {json.dumps(data, ensure_ascii=True, indent=2)}\n> ", end="", flush=True)
+                        # print(f"\r🔄 フィードバック受信: {json.dumps(data, ensure_ascii=True, indent=2)}\n> ", end="", flush=True)
                     except json.JSONDecodeError:
                         print(f"\r🔄 メッセージ受信: {msg}\n> ", end="", flush=True)
             except websockets.ConnectionClosedOK:
@@ -79,13 +80,25 @@ async def bot_viewer_client(uri: str) -> None:
         print("受信待機中... (Ctrl‑C で終了)\n")
 
         # ボットの個性情報
+        personality_types = ["enthusiastic", "critical", "curious", "shy", "funny", "technical", "supportive"]
+        interests = [
+            ["テクノロジー", "ゲーム", "音楽"],
+            ["アニメ", "マンガ", "映画"],
+            ["プログラミング", "AI", "機械学習"],
+            ["スポーツ", "健康", "料理"],
+            ["科学", "宇宙", "歴史"]
+        ]
+        emoji_usage = ["high", "medium", "low"]
+        
         bot_personality = {
             "id": str(uuid.uuid4()),
             "name": f"BotViewer_{uuid.uuid4().hex[:6]}",
-            "personality_type": "enthusiastic",  # enthusiastic, critical, curious, etc.
-            "interests": ["テクノロジー", "ゲーム", "音楽"],
-            "emoji_usage": "high"  # high, medium, low
+            "personality_type": random.choice(personality_types),
+            "interests": random.choice(interests),
+            "emoji_usage": random.choice(emoji_usage)
         }
+        
+        print(f"🤖 ボット個性: {bot_personality['personality_type']}, 興味: {', '.join(bot_personality['interests'])}, 絵文字使用: {bot_personality['emoji_usage']}")
 
         # ハートビート送信タスク
         async def send_heartbeat():
@@ -106,22 +119,25 @@ async def bot_viewer_client(uri: str) -> None:
                     data = json.loads(msg)
                     
                     if "type" in data and data["type"] == "stream_content":
-                        print(f"\r📺 配信内容: {data['content']}")
+                        # print(f"\r📺 配信内容: {data['content']}")
                         
-                        # ボットの反応を送信（実際のシステムでは自動生成）
-                        reaction = {
-                            "type": "reaction",
-                            "content": f"これは面白いですね！ 👍",  # 実際はAIが生成
+                        # AI生成のリクエストを送信
+                        ai_request = {
+                            "type": "receive_stream_content",
+                            "content": data['content'],
                             "bot_info": bot_personality,
                             "timestamp": time.time()
                         }
                         
-                        # 少し遅延を入れて自然な反応時間に
-                        await asyncio.sleep(1.5)
-                        await ws.send(json.dumps(reaction, ensure_ascii=False))
-                        print(f"🤖 反応送信: {reaction['content']}")
+                        # AIサーバーにリクエストを送信
+                        await ws.send(json.dumps(ai_request, ensure_ascii=True))
+                        # print("🔄 AI生成リクエスト送信...")
+                        
+                    elif "type" in data and data["type"] == "reaction" and data.get("ai_generated", False):
+                        # AIが生成した反応を表示
+                        print(f"🤖 AI生成反応: {data['content']}")
                     else:
-                        print(f"\r📩 メッセージ受信: {json.dumps(data, ensure_ascii=False, indent=2)}")
+                        print(f"\r📩 メッセージ受信: {json.dumps(data, ensure_ascii=True, indent=2)}")
                         
                 except json.JSONDecodeError:
                     print(f"\r📩 メッセージ受信: {msg}")
