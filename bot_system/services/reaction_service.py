@@ -29,6 +29,17 @@ class ReactionService:
         self.client = AsyncOpenAI(api_key=openai_api_key)
         self.model = openai_model
         
+        # 個性ごとの温度設定
+        self.personality_temperatures = {
+            "enthusiastic": 0.9,
+            "critical": 0.6,
+            "curious": 0.8,
+            "shy": 0.5,
+            "funny": 1.0,
+            "technical": 0.4,
+            "supportive": 0.7
+        }
+        
         # ボットの個性の説明（日本語）
         self.personality_descriptions = {
             "enthusiastic": "とても熱心で興奮しやすい。ポジティブで応援するような発言が多い。絵文字を多用する。",
@@ -127,6 +138,37 @@ class ReactionService:
                     if interest.lower() in stream_title.lower():
                         interest_level = "高い"
                         break
+                    
+            # 文脈理解のためのヒストリーをより詳細に構築
+            context_messages = ""
+            if previous_messages:
+                # メッセージと発言者情報を含める
+                for i, msg_data in enumerate(previous_messages[-5:]):  # 5つまで拡大
+                    msg = msg_data.get("content", "")
+                    speaker = msg_data.get("speaker", "配信者")
+                    timestamp = msg_data.get("timestamp", 0)
+                    time_ago = int((stream_duration - timestamp) / 60) if timestamp > 0 else "?"
+                    
+                    sanitized_msg = sanitize_text(msg)
+                    sanitized_speaker = sanitize_text(speaker)
+                    
+                    context_messages += f"{time_ago}分前 - {sanitized_speaker}: {sanitized_msg}\n"
+            
+            # キーワードと感情分析の追加
+            content_keywords = extract_keywords(content)
+            content_sentiment = analyze_sentiment(content)
+            
+            # 個性に応じた文字数制限の設定
+            character_limits = {
+                "enthusiastic": 60,
+                "critical": 70,
+                "curious": 60,
+                "shy": 30,
+                "funny": 60,
+                "technical": 80,
+                "supportive": 50
+            }
+            character_limit = character_limits.get(sanitized_personality, 50)
             
             # システムメッセージを構築
             system_message = f"""あなたはライブ配信「{sanitized_title}」の日本人の視聴者ボットです。
@@ -142,13 +184,35 @@ class ReactionService:
 - 配信タイトル: {sanitized_title}
 - 配信時間: {int(stream_duration/60)}分{int(stream_duration%60)}秒
 {context_messages}
+- 今までの配信で出たトピック: {", ".join(stream_topics) if stream_topics else "まだ特定されていません"}
 
 配信内容に対して、上記の個性に基づいた自然な反応を一行で返してください。
 実際の視聴者のように振る舞い、質問、感想、リアクション、絵文字などで反応してください。
-返答は50文字以内に簡潔にしてください。"""
+返答は{character_limit}文字以内に簡潔にしてください。
+
+【良い応答の例】
+- enthusiastic: わぁ！それすごいですね！次も楽しみにしてます！✨✨
+- critical: そのやり方だと効率が悪くないですか？別の方法も検討してみては？
+- curious: なぜその技術を選んだんですか？他の選択肢も考えたんですか？
+- shy: なるほど...（小声で）
+- funny: 爆発しなくてよかったですね笑 私なら逃げ出してます🏃💨
+- technical: そのアルゴリズムの計算量はO(n²)ですよね。並列化は検討されましたか？
+- supportive: お疲れ様です！いつも素晴らしい配信をありがとう😊
+
+【避けるべき応答の例】
+- 不自然に長い文章
+- ボットっぽい定型文
+- 配信内容と無関係なコメント
+- 個性と合わない反応スタイル
+
+"""
 
             # 配信内容もサニタイズ
             sanitized_content = sanitize_text(content)
+            
+            # 個性に応じた温度の設定
+            personality_type = bot_info.get("personality_type", "standard")
+            temperature = self.personality_temperatures.get(personality_type, 0.7)
             
             # OpenAI APIを呼び出し
             response = await self.client.chat.completions.create(
@@ -157,11 +221,42 @@ class ReactionService:
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": f"配信内容: {sanitized_content}\n\n視聴者としての自然な反応を一行で書いてください。"}
                 ],
-                max_tokens=60,
-                temperature=0.8  # 個性をより出すために少し高めに設定
+                max_tokens=100,  # 少し増やして十分な長さを確保
+                temperature=temperature,  # 個性に基づいて調整
+                presence_penalty=0.6,  # 繰り返しを減らす
+                frequency_penalty=0.5  # バリエーションを増やす
             )
             
             return response.choices[0].message.content.strip()
         
         except Exception as e:
             logger.error(f"AI反応生成エラー: {e}")
+
+def extract_keywords(text):
+    """簡単なキーワード抽出（実装例）"""
+    # 実際の実装ではMeCab等の形態素解析ライブラリを使用することを推奨
+    common_words = ["です", "ます", "した", "から", "ので", "けど", "って", "など"]
+    words = text.split()
+    keywords = []
+    
+    for word in words:
+        if len(word) > 1 and word not in common_words:
+            keywords.append(word)
+    
+    return keywords[:5]  # 最大5つのキーワードを返す
+
+def analyze_sentiment(text):
+    """簡易的な感情分析（実装例）"""
+    # 実際の実装では感情分析APIや辞書ベースの分析を推奨
+    positive_words = ["嬉しい", "楽しい", "素晴らしい", "好き", "良い", "すごい"]
+    negative_words = ["悲しい", "つらい", "難しい", "嫌い", "悪い", "残念"]
+    
+    positive_count = sum(1 for word in positive_words if word in text)
+    negative_count = sum(1 for word in negative_words if word in text)
+    
+    if positive_count > negative_count:
+        return "ポジティブ"
+    elif negative_count > positive_count:
+        return "ネガティブ"
+    else:
+        return "中立"
